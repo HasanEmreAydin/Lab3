@@ -1,0 +1,163 @@
+#include <math.h>
+#include <bits/stdc++.h>
+
+#include "ros/ros.h"
+#include "advrobotics_lab3/ikpoppy.h"
+#include "advrobotics_lab3/joints.h"
+#include "advrobotics_lab3/gripper.h"
+
+#include "Kinematics.h"
+
+float HEIGHT_FIRST_CUBE = 2.5; // Height adjustment for the first cube
+float HEIGHT_INCREMENT = 2.9; // Height increment for subsequent cubes
+float LIFT_HEIGHT = 4.0; // Lift height when moving to avoid collisions
+int CUBE_NUMBER; // Total number of cubes
+float _fps = 1.0;
+
+std::vector<float> INIT_POS = {15.0, 10.0, 0.0};
+std::vector<float> FINAL_POS = {15.0, -10.0, 0.0};
+std::vector<float> DEFAULT_POS = {5.0, 0.0, 2.0};
+
+double deg2rad(double angle)
+{
+    return -angle / 180.0 * M_PI;
+}
+
+double rad2deg(double angle)
+{
+    return -angle * 180.0 / M_PI;
+}
+
+int main(int argc, char** argv)
+{
+    ros::init(argc, argv, "tower_builder");
+
+    if (argc != 2)
+    {
+        ROS_INFO("usage: rosrun advrobotics_lab3 tower_builder cube_number");
+        ROS_INFO("ex.: rosrun advrobotics_lab3 tower_builder 4");
+        return 1;
+    }
+
+    ros::NodeHandle nh;
+
+    // declare publishers + service
+    ros::ServiceClient client = nh.serviceClient<advrobotics_lab3::ikpoppy>("ik");
+    ros::Publisher jointCmdPublisher = nh.advertise<advrobotics_lab3::joints>("joint_cmd", 1);
+    ros::Publisher gripperCmdPublisher = nh.advertise<advrobotics_lab3::gripper>("gripper_cmd", 1);
+
+    // declare messages
+    advrobotics_lab3::gripper gripperCmdMsg;
+    advrobotics_lab3::joints jointCmdMsg;
+    advrobotics_lab3::ikpoppy srv;
+
+    CUBE_NUMBER = atof(argv[1]);
+
+    // create a loop rate
+    ros::Rate loopRate(_fps);
+
+    float current_height = FINAL_POS[2] + HEIGHT_FIRST_CUBE; // Starting height for the first cube
+
+    // ////////////////////////////////////////
+    // EXECUTION
+    // ////////////////////////////////////////
+
+    for (int cube = 0; cube < CUBE_NUMBER; cube++) {
+        ROS_INFO("CUBE: %i", cube);
+
+        // Ensure the gripper is open before picking a cube
+        ROS_INFO("Opening the gripper...");
+        gripperCmdMsg.gripper = -20.0; // Adjust gripper strength to avoid dropping
+        gripperCmdPublisher.publish(gripperCmdMsg);
+        loopRate.sleep();
+
+        // Move above initial position
+        ROS_INFO("Going to default position...");
+        jointCmdMsg.q1 = INIT_POS[0];
+        jointCmdMsg.q2 = INIT_POS[1];
+        jointCmdMsg.q3 = INIT_POS[2] + LIFT_HEIGHT;
+        jointCmdPublisher.publish(jointCmdMsg);
+        loopRate.sleep();
+
+        // Move to initial position --> INIT_POSITION
+        ROS_INFO("Going to initial position...");
+        srv.request.x = INIT_POS[0];
+        srv.request.y = INIT_POS[1];
+        srv.request.z = INIT_POS[2];
+        if (client.call(srv)) {
+            jointCmdMsg.q1 = rad2deg(srv.response.q1);
+            jointCmdMsg.q2 = rad2deg(srv.response.q2);
+            jointCmdMsg.q3 = rad2deg(srv.response.q3);
+
+            jointCmdPublisher.publish(jointCmdMsg);
+        } else {
+            ROS_ERROR("Failed to call the service ik!");
+            return 1;
+        }
+        loopRate.sleep();
+
+        // Close gripper to grab the cube
+        ROS_INFO("Closing the gripper...");
+        gripperCmdMsg.gripper = 15.0; // Adjust for secure grip
+        gripperCmdPublisher.publish(gripperCmdMsg);
+        loopRate.sleep();
+
+        // Lift above initial position
+        ROS_INFO("Lifting above initial position...");
+        jointCmdMsg.q3 = INIT_POS[2] + LIFT_HEIGHT;
+        jointCmdPublisher.publish(jointCmdMsg);
+        loopRate.sleep();
+
+        // Move to default position
+        ROS_INFO("Returning to default position...");
+        jointCmdMsg.q1 = DEFAULT_POS[0];
+        jointCmdMsg.q2 = DEFAULT_POS[1];
+        jointCmdMsg.q3 = DEFAULT_POS[2] + LIFT_HEIGHT;
+        jointCmdPublisher.publish(jointCmdMsg);
+        loopRate.sleep();
+
+        // Move to final position --> FINAL_POSITION
+        ROS_INFO("Going to final position...");
+        srv.request.x = FINAL_POS[0];
+        srv.request.y = FINAL_POS[1];
+        srv.request.z = current_height; // Place the cube at the current height
+        if (client.call(srv)) {
+            jointCmdMsg.q1 = rad2deg(srv.response.q1);
+            jointCmdMsg.q2 = rad2deg(srv.response.q2);
+            jointCmdMsg.q3 = rad2deg(srv.response.q3);
+
+            jointCmdPublisher.publish(jointCmdMsg);
+        } else {
+            ROS_ERROR("Failed to call the service ik!");
+            return 1;
+        }
+        loopRate.sleep();
+
+        // Open gripper to release the cube
+        ROS_INFO("Opening the gripper to release the cube...");
+        gripperCmdMsg.gripper = -20.0; // Open gripper to release
+        gripperCmdPublisher.publish(gripperCmdMsg);
+        loopRate.sleep();
+
+        // Lift above final position
+        ROS_INFO("Lifting above final position...");
+        jointCmdMsg.q3 = current_height + LIFT_HEIGHT;
+        jointCmdPublisher.publish(jointCmdMsg);
+        loopRate.sleep();
+
+        // Move back to default position
+        ROS_INFO("Returning to default position...");
+        jointCmdMsg.q1 = DEFAULT_POS[0];
+        jointCmdMsg.q2 = DEFAULT_POS[1];
+        jointCmdMsg.q3 = DEFAULT_POS[2];
+        jointCmdPublisher.publish(jointCmdMsg);
+        loopRate.sleep();
+
+        // Update the current height for the next cube
+        current_height += (cube == 0) ? HEIGHT_FIRST_CUBE : HEIGHT_INCREMENT;
+
+        ros::spinOnce();
+    }
+
+    return 0;
+}
